@@ -1,0 +1,153 @@
+# Original idea by @ISnackable. Thanks to him for handling the hardest parts!
+# https://github.com/ISnackable/CercubePlus/blob/main/.github/workflows/Build.yml
+
+name: Build and Release BHTikTokPlus
+
+on:
+  workflow_dispatch:
+    inputs:
+      bhtiktok_version:
+        description: "The version of BHTikTok"
+        default: "0.0.1"
+        required: true
+        type: string
+      decrypted_tiktok_url:
+        description: "The direct URL to the decrypted TikTok ipa"
+        default: ""
+        required: true
+        type: string
+      tiktok_version:
+        description: "The version of TikTok"
+        default: ""
+        required: true
+        type: string
+      bundle_id:
+        description: "Modify the bundle ID. Not recommended"
+        default: "com.zhiliaoapp.musically"
+        required: true
+        type: string
+      app_name:
+        description: "Modify the name of the app on the Home Screen. Not recommended"
+        default: "TikTok"
+        required: true
+        type: string
+      create_release:
+        description: "Create a draft release"
+        default: true
+        required: false
+        type: boolean
+  
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build BHTikTokPlus
+    runs-on: macos-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout Main
+        uses: actions/checkout@v3.5.3
+        with:
+          path: main
+          submodules: recursive
+
+      - name: Install Dependencies
+        run: brew install ldid dpkg make
+
+      - name: Set PATH environment variable
+        run: echo "$(brew --prefix make)/libexec/gnubin" >> $GITHUB_PATH 
+
+      - name: Setup Theos
+        uses: actions/checkout@v3.5.3
+        with:
+          repository: theos/theos
+          ref: 3da31488281ecf4394d10302d2629607f4a1aa07
+          path: theos
+          submodules: recursive
+      
+      - name: Caching
+        id: SDK
+        uses: actions/cache@v3.3.1
+        env:
+          cache-name: iOS-15.5-SDK
+        with:
+          path: theos/sdks/
+          key: ${{ env.cache-name }}
+      
+      - name: Download iOS 15.5 SDK
+        if: steps.SDK.outputs.cache-hit != 'true'
+        run: |
+          svn checkout -q https://github.com/chrisharper22/sdks/trunk/iPhoneOS15.5.sdk
+          mv *.sdk $THEOS/sdks
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Setup Theos Jailed
+        uses: actions/checkout@v3.5.3
+        with:
+          repository: qnblackcat/theos-jailed
+          ref: master
+          path: theos-jailed
+          submodules: recursive
+
+      - name: Install Theos Jailed
+        run: |
+          ./theos-jailed/install
+        env:
+          THEOS: ${{ github.workspace }}/theos
+
+      - name: Download TikTok iPA
+        run: |
+          wget "$TIKTOK_URL" --no-verbose -O main/TikTok.ipa && echo -e "==> \033[1mTikTok v${{ inputs.tiktok_version }} downloaded! \033[0m"
+
+        env:
+          THEOS: ${{ github.workspace }}/theos
+          TIKTOK_VERSION: ${{ inputs.tiktok_version }}
+          TIKTOK_URL: ${{ inputs.decrypted_tiktok_url }}
+
+      - name: Fix compiling & Build Package
+        id: build_package
+        run: |
+          cd ${{ github.workspace }}/main
+          sed -i '' "27s#.*#BUNDLE_ID = ${{ env.BUNDLE_ID }}#g" Makefile
+          sed -i '' "26s#.*#DISPLAY_NAME = ${{ env.APP_NAME }}#g" Makefile          
+          make package IPA=TikTok.ipa FINALPACKAGE=1
+          (mv "packages/$(ls -t packages | head -n1)" "packages/BHTiktokPlus_${{ env.TIKTOK_VERSION  }}_${{ env.BHTIKTOK_VERSION }}.ipa")
+          echo "package=$(ls -t packages | head -n1)" >>$GITHUB_OUTPUT
+          echo -e "==> \033[1mSHASUM256: $(shasum -a 256 packages/*.ipa | cut -f1 -d' ')\033[0m"
+          echo -e "==> \033[1mBundle ID: ${{ env.BUNDLE_ID }}\033[0m"
+
+        env:
+          THEOS: ${{ github.workspace }}/theos
+          BHTIKTOK_VERSION: ${{ inputs.bhtiktok_version }}
+          TIKTOK_VERSION: ${{ inputs.tiktok_version }}
+          BUNDLE_ID: ${{ inputs.bundle_id }}
+          APP_NAME: ${{ inputs.app_name }}
+
+      - name: Upload Artifact
+        uses: actions/upload-artifact@v3.1.1
+        env:
+          BHTIKTOK_VERSION: ${{ inputs.bhtiktok_version }}
+          TIKTOK_VERSION: ${{ inputs.tiktok_version }}
+        with:
+          name: BHTikTokPlus_${{ env.TIKTOK_VERSION }}_${{ env.BHTIKTOK_VERSION }}
+          path: ${{ github.workspace }}/main/packages/${{ steps.build_package.outputs.package }}
+          if-no-files-found: error
+
+      - name: Create Release
+        id: create_release
+        uses: softprops/action-gh-release@v0.1.15
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          BHTIKTOK_VERSION: ${{ inputs.bhtiktok_version }}
+          TIKTOK_VERSION: ${{ inputs.tiktok_version }}
+          DRAFT: ${{ inputs.create_release }}
+        with:
+          tag_name: v${{ env.TIKTOK_VERSION }}-${{ env.BHTIKTOK_VERSION }}-(${{ github.run_number }})
+          name: v${{ env.TIKTOK_VERSION }}-${{ env.BHTIKTOK_VERSION }}-(${{ github.run_number }})
+          files: main/packages/*.ipa
+          draft: ${{ env.DRAFT }}
